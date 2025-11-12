@@ -46,7 +46,7 @@ The test code (what used to be [`Grader`] for consistency-only tests) has evolve
 
 3. [`GraderFaultTolerance`](https://bitbucket.org/distrsys/fault-tolerant-db/src/master/test/GraderFaultTolerance.java): Setup and tests for testing fault tolerance, the primary testing focus of this assignment, inherited from `GraderCommonSetup`. The documentation of the tests in this class should be self-explanatory.
 
-4. [`ServerFailureRecoveryManager`](https://bitbucket.org/distrsys/fault-tolerant-db/src/master/test/ServerFailureRecoveryManager.java): A class with sadistic (oops, I meant static) utiility methods that derive pleasure from killing and rebirthing your servers to stress-test fault tolerance.
+4. [`ServerFailureRecoveryManager`](https://bitbucket.org/distrsys/fault-tolerant-db/src/master/test/ServerFailureRecoveryManager.java): A class with sadistic (oops, I meant static) utiility methods that derive pleasure from killing and restarting your servers to stress-test fault tolerance.
 
 ***
 
