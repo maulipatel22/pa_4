@@ -3,19 +3,17 @@ package server.faulttolerance;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.Session;
 import edu.umass.cs.nio.nioutils.NIOHeader;
-import edu.umass.cs.nio.nioutils.NodeConfigUtils;
 import edu.umass.cs.utils.Util;
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
-
-import server.ReplicatedServer;
 import server.MyDBSingleServer;
+import server.ReplicatedServer;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.*;
 import java.util.logging.Level;
 
 public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watcher {
@@ -31,8 +29,10 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     private ZooKeeper zk;
     private final String zkBase = "/seq";
 
-    private final Map<String, String> pendingOps = Collections.synchronizedMap(new TreeMap<>()); 
+    private final SortedMap<String, String> pendingOps = Collections.synchronizedSortedMap(new TreeMap<>());
     private String lastAppliedOp = null;
+
+    private final ExecutorService applyExecutor = Executors.newSingleThreadExecutor();
 
     public MyDBFaultTolerantServerZK(edu.umass.cs.nio.interfaces.NodeConfig<String> nodeConfig,
                                      String myID, InetSocketAddress isaDB) throws IOException {
@@ -40,68 +40,67 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
                 nodeConfig.getNodePort(myID) - ReplicatedServer.SERVER_PORT_OFFSET), isaDB, myID);
 
         this.myID = myID;
-
         this.cluster = Cluster.builder().addContactPoint("127.0.0.1").build();
         this.session = this.cluster.connect(myID);
 
         try {
-            final CountDownLatch connectedSignal = new CountDownLatch(1);
-
+            CountDownLatch connectedSignal = new CountDownLatch(1);
             this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 3000, event -> {
-                if (event.getState() == Watcher.Event.KeeperState.SyncConnected) connectedSignal.countDown();
+                if (event.getState() == Watcher.Event.KeeperState.SyncConnected)
+                    connectedSignal.countDown();
             });
-
             connectedSignal.await();
 
-            try {
-                Stat s = zk.exists(zkBase, false);
-                if (s == null) {
-                    zk.create(zkBase, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-                }
-            } catch (KeeperException.NodeExistsException ignored) {
+            if (zk.exists(zkBase, false) == null) {
+                zk.create(zkBase, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
             }
 
             List<String> children = zk.getChildren(zkBase, false);
             Collections.sort(children);
             for (String child : children) {
-                String full = zkBase + "/" + child;
-                byte[] data = zk.getData(full, false, null);
-                String cmd = new String(data, StandardCharsets.UTF_8);
-                pendingOps.put(child, cmd);
+                byte[] data = zk.getData(zkBase + "/" + child, false, null);
+                pendingOps.put(child, new String(data, StandardCharsets.UTF_8));
             }
 
-            applyPendingOps();
+            if (!pendingOps.isEmpty()) {
+                lastAppliedOp = pendingOps.lastKey();
+            }
+
+            applyPendingOps(); 
 
         } catch (Exception e) {
-            throw new IOException("Failed to initialize ZooKeeper client: " + e);
+            throw new IOException("Failed to initialize ZooKeeper client", e);
         }
 
-        log.log(Level.INFO, "ZK-based server {0} started and connected to Cassandra keyspace {1}", new Object[]{this.myID, myID});
+        log.log(Level.INFO, "ZK-based server {0} started and connected to Cassandra keyspace {1}",
+                new Object[]{this.myID, myID});
     }
 
     @Override
     protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
-        String request = new String(bytes, StandardCharsets.UTF_8);
+        final String request = new String(bytes, StandardCharsets.UTF_8);
         log.info(this.myID + " received client request: " + request + " from " + header.sndr);
 
-        try {
-            String created = zk.create(zkBase + "/op-", request.getBytes(StandardCharsets.UTF_8),
-                    ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT_SEQUENTIAL);
+        applyExecutor.submit(() -> {
+            try {
+                String created = zk.create(zkBase + "/op-", request.getBytes(StandardCharsets.UTF_8),
+                        ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT_SEQUENTIAL);
+                String nodeName = created.substring(zkBase.length() + 1);
 
-            String nodeName = created.substring(zkBase.length() + 1);
-            pendingOps.put(nodeName, request);
+                pendingOps.put(nodeName, request);
+                applyPendingOps();
 
-            applyPendingOps();
-
-        } catch (KeeperException | InterruptedException e) {
-            log.log(Level.SEVERE, "Failed to create sequential node in Zookeeper", e);
-        }
+            } catch (KeeperException | InterruptedException e) {
+                log.log(Level.SEVERE, "Failed to create sequential node in Zookeeper", e);
+            }
+        });
     }
 
     private void applyPendingOps() {
         synchronized (pendingOps) {
             List<String> keys = new ArrayList<>(pendingOps.keySet());
             Collections.sort(keys);
+
             for (String nodeName : keys) {
                 if (lastAppliedOp == null || nodeName.compareTo(lastAppliedOp) > 0) {
                     String cmd = pendingOps.get(nodeName);
@@ -110,17 +109,15 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
                             session.execute(cmd);
                         }
                         lastAppliedOp = nodeName;
-                        pendingOps.remove(nodeName);
 
                         if (pendingOps.size() > MAX_LOG_SIZE) {
-                            List<String> keep = new ArrayList<>(pendingOps.keySet());
-                            Collections.sort(keep);
-                            int removeCount = keep.size() - MAX_LOG_SIZE;
-                            for (int i = 0; i < removeCount; i++) {
-                                pendingOps.remove(keep.get(i));
+                            int removeCount = pendingOps.size() - MAX_LOG_SIZE;
+                            Iterator<String> it = pendingOps.keySet().iterator();
+                            while (removeCount-- > 0 && it.hasNext()) {
+                                it.next();
+                                it.remove();
                             }
                         }
-
                     } catch (Exception e) {
                         log.log(Level.SEVERE, "Failed to apply op " + nodeName + " command:" + cmd, e);
                     }
@@ -136,6 +133,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     @Override
     public void close() {
         super.close();
+        applyExecutor.shutdownNow();
         try {
             if (zk != null) zk.close();
         } catch (InterruptedException ignored) {}
@@ -145,9 +143,11 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
 
     public static void main(String[] args) throws IOException {
         new MyDBFaultTolerantServerZK(
-                NodeConfigUtils.getNodeConfigFromFile(args[0], ReplicatedServer.SERVER_PREFIX, ReplicatedServer.SERVER_PORT_OFFSET),
+                edu.umass.cs.nio.nioutils.NodeConfigUtils.getNodeConfigFromFile(
+                        args[0], ReplicatedServer.SERVER_PREFIX, ReplicatedServer.SERVER_PORT_OFFSET),
                 args[1],
-                args.length > 2 ? Util.getInetSocketAddressFromString(args[2]) : new InetSocketAddress("localhost", 9042)
+                args.length > 2 ? Util.getInetSocketAddressFromString(args[2])
+                        : new InetSocketAddress("localhost", 9042)
         );
     }
 }
