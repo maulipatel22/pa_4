@@ -54,31 +54,33 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     public MyDBFaultTolerantServerZK(NodeConfig<String> nodeConfig,
                                      String myID,
                                      InetSocketAddress cassandraAddress) throws IOException {
-        super(
-                new InetSocketAddress(nodeConfig.getNodeAddress(myID), nodeConfig.getNodePort(myID)),
+        super(new InetSocketAddress(nodeConfig.getNodeAddress(myID),
+                        nodeConfig.getNodePort(myID)),
                 cassandraAddress,
-                myID
-        );
+                myID.toLowerCase());
         this.nodeConfig = nodeConfig;
-        this.myID = myID;
-
-        this.cluster = Cluster.builder()
-                .addContactPoint(cassandraAddress.getHostString())
-                .withPort(cassandraAddress.getPort())
-                .build();
-        this.session = cluster.connect(myID);
-
+        this.myID = myID.toLowerCase();
         try {
+            this.cluster = Cluster.builder()
+                    .addContactPoint(cassandraAddress.getHostString())
+                    .withPort(cassandraAddress.getPort())
+                    .build();
+            Session sys = cluster.connect();
+            String ks = this.myID;
+            String createKs = "CREATE KEYSPACE IF NOT EXISTS " + ks
+                    + " WITH replication = {'class':'SimpleStrategy','replication_factor':1};";
+            sys.execute(createKs);
+            sys.close();
+            this.session = cluster.connect(ks);
             connectToZookeeper();
             ensureZNodeExists(REQUESTS_PATH);
             ensureZNodeExists(SERVERS_PATH);
             registerMyAddress();
+            initKVTable();
             initCheckpointTable();
             loadCheckpoint();
             replayPendingRequests();
-            zk.getChildren(REQUESTS_PATH, this);
         } catch (Exception e) {
-            log.log(Level.SEVERE, "Error initializing fault-tolerant server", e);
             throw new IOException(e);
         }
     }
@@ -99,7 +101,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             if (event.getType() == Event.EventType.NodeChildrenChanged
                     && REQUESTS_PATH.equals(event.getPath())) {
                 replayPendingRequests();
-                zk.getChildren(REQUESTS_PATH, this);
             }
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error in ZooKeeper watcher", e);
@@ -107,14 +108,10 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     }
 
     private void ensureZNodeExists(String path) throws KeeperException, InterruptedException {
-        try {
-            Stat stat = zk.exists(path, false);
-            if (stat == null) {
-                zk.create(path, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-                log.info("Created znode " + path + " in ZooKeeper");
-            }
-        } catch (KeeperException.NodeExistsException e) {
-            log.fine("Znode " + path + " already exists");
+        Stat stat = zk.exists(path, false);
+        if (stat == null) {
+            zk.create(path, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            log.info("Created znode " + path + " in ZooKeeper");
         }
     }
 
@@ -123,7 +120,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         String address = nodeConfig.getNodeAddress(myID) + ":"
                 + (nodeConfig.getNodePort(myID) - ReplicatedServer.SERVER_PORT_OFFSET);
         byte[] data = address.getBytes(StandardCharsets.UTF_8);
-
         Stat stat = zk.exists(path, false);
         if (stat == null) {
             try {
@@ -134,8 +130,18 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         } else {
             zk.setData(path, data, -1);
         }
-
         log.info("Registered server " + myID + " at " + address + " in ZooKeeper");
+    }
+
+    private void initKVTable() {
+        String cql = "CREATE TABLE IF NOT EXISTS kv ("
+                + "key bigint, "
+                + "seq int, "
+                + "value int, "
+                + "PRIMARY KEY (key, seq)"
+                + ");";
+        session.execute(cql);
+        log.info("Ensured kv table exists in keyspace " + myID);
     }
 
     private void initCheckpointTable() {
@@ -154,7 +160,8 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             Row row = rs.one();
             if (row != null) {
                 this.lastAppliedZnode = row.getString("last_znode");
-                log.info("Loaded checkpoint for " + myID + " last_znode=" + this.lastAppliedZnode);
+                log.info("Loaded checkpoint for " + myID
+                        + " last_znode=" + this.lastAppliedZnode);
             } else {
                 log.info("No existing checkpoint for " + myID + "; starting from scratch");
             }
@@ -176,46 +183,60 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
-    private void applyRequest(byte[] data) {
-        String request = new String(data, StandardCharsets.UTF_8);
+    private void applyRequestToDB(String request) {
         try {
-            session.execute(request);
+            String[] parts = request.trim().split("\\s+");
+            if (parts.length < 2) {
+                return;
+            }
+            String op = parts[0].toUpperCase();
+            long key = Long.parseLong(parts[1]);
+            if (op.equals("PUT") || op.equals("ADD")) {
+                if (parts.length < 3) {
+                    return;
+                }
+                int value = Integer.parseInt(parts[2]);
+                ResultSet rs = session.execute("SELECT seq FROM kv WHERE key=" + key
+                        + " ORDER BY seq DESC LIMIT 1;");
+                Row row = rs.one();
+                int nextSeq = row == null ? 0 : row.getInt("seq") + 1;
+                String cql = "INSERT INTO kv (key, seq, value) VALUES ("
+                        + key + ", " + nextSeq + ", " + value + ");";
+                session.execute(cql);
+            } else if (op.equals("SET")) {
+                if (parts.length < 3) {
+                    return;
+                }
+                int value = Integer.parseInt(parts[2]);
+                session.execute("DELETE FROM kv WHERE key=" + key + ";");
+                String cql = "INSERT INTO kv (key, seq, value) VALUES ("
+                        + key + ", 0, " + value + ");";
+                session.execute(cql);
+            }
         } catch (Exception e) {
-            log.log(Level.SEVERE, "Error applying request from log: " + request, e);
+            log.log(Level.SEVERE, "Error applying request to DB: " + request, e);
         }
     }
 
     private synchronized void replayPendingRequests() {
         try {
-            List<String> children = zk.getChildren(REQUESTS_PATH, false);
+            List<String> children = zk.getChildren(REQUESTS_PATH, true);
             if (children.isEmpty()) {
-                log.info("No requests in ZK log; nothing to replay");
+                log.info("No requests in ZK log; nothing to apply");
                 return;
             }
-
             Collections.sort(children);
-
-            int startIndex = 0;
-            if (lastAppliedZnode != null) {
-                int idx = children.indexOf(lastAppliedZnode);
-                if (idx >= 0) {
-                    startIndex = idx + 1;
+            for (String child : children) {
+                if (lastAppliedZnode != null && child.compareTo(lastAppliedZnode) <= 0) {
+                    continue;
                 }
-            }
-
-            for (int i = startIndex; i < children.size(); i++) {
-                String child = children.get(i);
                 String fullPath = REQUESTS_PATH + "/" + child;
                 byte[] data = zk.getData(fullPath, false, null);
-                applyRequest(data);
+                String request = new String(data, StandardCharsets.UTF_8);
+                applyRequestToDB(request);
                 lastAppliedZnode = child;
-            }
-
-            if (startIndex < children.size()) {
                 persistCheckpoint();
-                log.info("Updated checkpoint; lastAppliedZnode=" + lastAppliedZnode);
-            } else {
-                log.fine("Checkpoint already up to date at " + lastAppliedZnode);
+                log.info("Applied and checkpointed znode " + child);
             }
         } catch (KeeperException.NoNodeException nne) {
             log.log(Level.INFO, "No /requests znode yet; nothing to replay");
@@ -226,10 +247,11 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
 
     @Override
     protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
+        String request = new String(bytes, StandardCharsets.UTF_8);
         try {
             zk.create(
                     REQUESTS_PATH + "/req_",
-                    bytes,
+                    request.getBytes(StandardCharsets.UTF_8),
                     ZooDefs.Ids.OPEN_ACL_UNSAFE,
                     CreateMode.PERSISTENT_SEQUENTIAL
             );
