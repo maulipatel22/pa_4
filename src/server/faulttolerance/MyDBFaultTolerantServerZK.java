@@ -39,10 +39,8 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     private com.datastax.driver.core.Session session;
 
     public MyDBFaultTolerantServerZK(NodeConfig<String> nodeConfig, String myID,
-                                     InetSocketAddress isaDB) {
-        super(new InetSocketAddress(nodeConfig.getNodeAddress(myID),
-                nodeConfig.getNodePort(myID)), isaDB, myID);
-
+                                    InetSocketAddress isaDB) {
+        superWrapper(nodeConfig, myID, isaDB); // call wrapper
         this.myID = myID;
         this.nodeConfig = nodeConfig;
 
@@ -54,9 +52,20 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             replayPendingRequests();
         } catch (IOException | KeeperException | InterruptedException e) {
             e.printStackTrace();
-            throw new RuntimeException(e); // wrap checked exceptions for grader
+            throw new RuntimeException(e); // wrap checked exceptions
         }
     }
+
+// wrapper method to handle IOException from super(...)
+private static void superWrapper(NodeConfig<String> nodeConfig, String myID, InetSocketAddress isaDB) {
+    try {
+        new MyDBSingleServer(new InetSocketAddress(nodeConfig.getNodeAddress(myID),
+                nodeConfig.getNodePort(myID)), isaDB, myID);
+    } catch (IOException e) {
+        throw new RuntimeException(e);
+    }
+}
+
 
     private void connectToCassandra(InetSocketAddress isaDB) {
         cluster = Cluster.builder()
