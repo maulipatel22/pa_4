@@ -44,6 +44,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     private final Cluster cluster;
     private final Session session;
 
+    // Last znode name this server has applied (e.g., "req_0000000032")
     private volatile String lastAppliedZnode = null;
 
     public MyDBFaultTolerantServerZK(NodeConfig<String> nodeConfig,
@@ -99,14 +100,13 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
 
             if (event.getType() == Event.EventType.NodeChildrenChanged
                     && REQUESTS_PATH.equals(event.getPath())) {
-                replayPendingRequests(); 
+                replayPendingRequests();
             }
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error in ZooKeeper watcher", e);
         }
     }
 
- 
     private void ensureZNodeExists(String path) throws KeeperException, InterruptedException {
         try {
             Stat stat = zk.exists(path, false);
@@ -178,6 +178,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
+
     private synchronized void replayPendingRequests() {
         try {
             List<String> children = zk.getChildren(REQUESTS_PATH, this);
@@ -209,18 +210,30 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
-    
 
     @Override
     protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
         String request = new String(bytes, StandardCharsets.UTF_8);
+
         try {
-            zk.create(
+            String fullPath = zk.create(
                     REQUESTS_PATH + "/req_",
                     request.getBytes(StandardCharsets.UTF_8),
                     ZooDefs.Ids.OPEN_ACL_UNSAFE,
                     CreateMode.PERSISTENT_SEQUENTIAL
             );
+            String nodeName = fullPath.substring(fullPath.lastIndexOf('/') + 1);
+
+            try {
+                session.execute(request);
+            } catch (Exception e) {
+                log.log(Level.SEVERE, "Error executing client request locally: " + request, e);
+            }
+
+            synchronized (this) {
+                lastAppliedZnode = nodeName;
+                persistCheckpoint();
+            }
 
             try {
                 clientMessenger.send(header.sndr, "OK".getBytes(StandardCharsets.UTF_8));
@@ -235,7 +248,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
- 
+    @Override
     protected void handleMessageFromServer(byte[] bytes, NIOHeader header) {
     }
 
