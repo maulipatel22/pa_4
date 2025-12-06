@@ -50,7 +50,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
                                      String myID,
                                      InetSocketAddress cassandraAddr) throws IOException {
         super(new InetSocketAddress(nodeConfig.getNodeAddress(myID),
-                nodeConfig.getNodePort(myID)), cassandraAddr);
+                nodeConfig.getNodePort(myID)), cassandraAddr, myID);
         this.nodeConfig = nodeConfig;
         this.myID = myID;
         this.cluster = Cluster.builder()
