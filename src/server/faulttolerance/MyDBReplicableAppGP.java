@@ -11,7 +11,6 @@ import edu.umass.cs.nio.interfaces.IntegerPacketType;
 import edu.umass.cs.reconfiguration.reconfigurationutils.RequestParseException;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -22,7 +21,7 @@ public class MyDBReplicableAppGP implements Replicable {
     private final Cluster cluster;
     private final Session session;
     private final String keyspace;
-    private static final String TABLE = "kv"; 
+    private static final String TABLE = "kv";
 
     public MyDBReplicableAppGP(String[] args) throws IOException {
         if (args == null || args.length == 0 || args[0] == null) {
@@ -46,7 +45,6 @@ public class MyDBReplicableAppGP implements Replicable {
                     .withPort(cassandraPort)
                     .build();
             this.session = this.cluster.connect();
-
             initSchema();
         } catch (Exception e) {
             throw new IOException("Error initializing Cassandra", e);
@@ -68,7 +66,6 @@ public class MyDBReplicableAppGP implements Replicable {
         session.execute(tableCql);
     }
 
- 
     @Override
     public boolean execute(Request request, boolean doNotReplyToClient) {
         return execute(request);
@@ -81,23 +78,19 @@ public class MyDBReplicableAppGP implements Replicable {
         }
 
         RequestPacket rp = (RequestPacket) request;
-
-        String reqString = rp.getRequestValue(); // if this doesn’t compile, use rp.toString() and adjust
+        String reqString = rp.getRequestValue(); 
 
         handleRequestString(reqString);
 
         return true;
     }
 
+  
     private void handleRequestString(String req) {
-        if (req == null) {
-            return;
-        }
+        if (req == null) return;
 
         String trimmed = req.trim();
-        if (trimmed.isEmpty()) {
-            return;
-        }
+        if (trimmed.isEmpty()) return;
 
         String[] parts = trimmed.split("\\s+");
         String op = parts[0].toUpperCase();
@@ -141,6 +134,7 @@ public class MyDBReplicableAppGP implements Replicable {
             e.printStackTrace();
         }
     }
+
     @Override
     public String checkpoint(String name) {
         return "";
@@ -153,12 +147,12 @@ public class MyDBReplicableAppGP implements Replicable {
 
     @Override
     public Request getRequest(String s) throws RequestParseException {
-        return null;
+        return null; 
     }
 
     @Override
     public Set<IntegerPacketType> getRequestTypes() {
-        return Collections.unmodifiableSet(new HashSet<IntegerPacketType>());
+        return new HashSet<IntegerPacketType>();
     }
 
     @Override
