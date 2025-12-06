@@ -88,11 +88,15 @@ public class MyDBReplicableAppGP implements Replicable {
             return false;
         }
     }
+        @Override
+        public Request getRequest(String s) throws RequestParseException {
+            try {
+                return new RequestPacket(s.getBytes("UTF-8"));
+            } catch (Exception e) {
+                throw new RequestParseException(e);
+            }
+        }
 
-    @Override
-    public Request getRequest(String s) throws RequestParseException {
-        return new RequestPacket(s.getBytes(StandardCharsets.UTF_8));
-    }
 
     @Override
     public String checkpoint(String s) {
