@@ -59,14 +59,17 @@ public class MyDBReplicableAppGP implements Replicable {
             throw new IllegalArgumentException("Expected RequestPacket");
 
         RequestPacket rp = (RequestPacket) request;
-        String command;
-        if (rp.requestValue != null) {
-            command = rp.requestValue instanceof byte[]
-                    ? new String((byte[]) rp.requestValue, StandardCharsets.UTF_8)
-                    : rp.requestValue.toString();
-        } else {
-            command = "";
+        String command = rp.getRequestValue() != null
+                ? new String(rp.getRequestValue(), StandardCharsets.UTF_8).trim()
+                : "";
+        String lower = command.toLowerCase();
+        if (!(lower.startsWith("insert") || lower.startsWith("update") ||
+            lower.startsWith("delete") || lower.startsWith("create") ||
+            lower.startsWith("drop")   || lower.startsWith("use") ||
+            lower.startsWith("select"))) {
+            return true;
         }
+
 
         try {
             session.execute(command);
@@ -87,7 +90,7 @@ public class MyDBReplicableAppGP implements Replicable {
 
     @Override
     public Request getRequest(String s) throws RequestParseException {
-        return new RequestPacket(s, false);  // <-- fixed
+        return new RequestPacket(s.getBytes(StandardCharsets.UTF_8));
     }
 
 
