@@ -8,10 +8,12 @@ import edu.umass.cs.gigapaxos.paxospackets.RequestPacket;
 import edu.umass.cs.nio.interfaces.IntegerPacketType;
 import edu.umass.cs.nio.interfaces.NodeConfig;
 import edu.umass.cs.nio.nioutils.NodeConfigUtils;
+import edu.umass.cs.utils.Util;
 import edu.umass.cs.reconfiguration.reconfigurationutils.RequestParseException;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -23,7 +25,6 @@ public class MyDBReplicableAppGP implements Replicable {
     private Session session;
     private final String keyspace;
 
-
     public MyDBReplicableAppGP(String[] args) throws IOException {
         if (args == null || args.length < 1) {
             throw new IllegalArgumentException("Must provide keyspace name as args[0]");
@@ -31,7 +32,7 @@ public class MyDBReplicableAppGP implements Replicable {
         this.keyspace = args[0];
 
         InetSocketAddress isaDB = args.length > 1 ?
-                NodeConfigUtils.getInetSocketAddressFromString(args[1]) :
+                Util.getInetSocketAddressFromString(args[1]) :
                 new InetSocketAddress("localhost", 9042);
 
         cluster = Cluster.builder()
@@ -58,8 +59,7 @@ public class MyDBReplicableAppGP implements Replicable {
         }
 
         RequestPacket rp = (RequestPacket) request;
-
-        String command = rp.getCommand();
+        String command = new String(rp.getRequestBytes(), StandardCharsets.UTF_8);
 
         try {
             session.execute(command);
