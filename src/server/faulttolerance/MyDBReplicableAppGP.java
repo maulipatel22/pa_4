@@ -17,15 +17,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public class MyDBReplicableAppGP implements Replicable {
 
     public static final int SLEEP = 100; // used by tests
-
     private final Cluster cluster;
     private final Session session;
     private final String keyspace;
 
     private static final int MAX_LOG_SIZE = 400;
-
     private final Queue<String> requestLog = new ConcurrentLinkedQueue<>();
-
     private final File checkpointFile;
 
     public MyDBReplicableAppGP(String[] args) throws IOException {
@@ -52,7 +49,6 @@ public class MyDBReplicableAppGP implements Replicable {
         restoreCheckpoint();
     }
 
-
     @Override
     public boolean execute(Request request) {
         return execute(request, false);
@@ -64,7 +60,7 @@ public class MyDBReplicableAppGP implements Replicable {
             throw new IllegalArgumentException("Expected RequestPacket");
 
         RequestPacket rp = (RequestPacket) request;
-        String command = rp.toString();
+        String command = new String(rp.getRequest(), StandardCharsets.UTF_8);
 
         try {
             session.execute(command);
@@ -77,14 +73,12 @@ public class MyDBReplicableAppGP implements Replicable {
             }
 
             Thread.sleep(SLEEP);
-
             return true;
         } catch (Exception e) {
             e.printStackTrace();
             return false;
         }
     }
-
 
     @Override
     public String checkpoint(String s) {
@@ -96,7 +90,6 @@ public class MyDBReplicableAppGP implements Replicable {
         return checkpointFile.getAbsolutePath();
     }
 
-   
     @Override
     public boolean restore(String filePath, String s1) {
         try {
@@ -108,10 +101,9 @@ public class MyDBReplicableAppGP implements Replicable {
         }
     }
 
- 
     @Override
     public Request getRequest(String s) throws RequestParseException {
-        return new RequestPacket(s, false);
+        return new RequestPacket(s.getBytes(StandardCharsets.UTF_8), false);
     }
 
     @Override
@@ -119,7 +111,6 @@ public class MyDBReplicableAppGP implements Replicable {
         return new HashSet<>();
     }
 
-   
     public void close() {
         if (session != null) session.close();
         if (cluster != null) cluster.close();
@@ -134,15 +125,19 @@ public class MyDBReplicableAppGP implements Replicable {
         }
     }
 
-
     @SuppressWarnings("unchecked")
     private void restoreCheckpoint() throws IOException {
         if (!checkpointFile.exists()) return;
 
         try (ObjectInputStream ois = new ObjectInputStream(
                 new FileInputStream(checkpointFile))) {
-            List<String> savedLog = (List<String>) ois.readObject();
 
+            Object obj = ois.readObject();
+            if (!(obj instanceof List)) {
+                throw new IOException("Invalid checkpoint format");
+            }
+
+            List<String> savedLog = (List<String>) obj;
             for (String cmd : savedLog) {
                 try {
                     session.execute(cmd);
