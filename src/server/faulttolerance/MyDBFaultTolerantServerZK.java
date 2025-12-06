@@ -27,6 +27,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     public static final int DEFAULT_PORT = 2181;
     public static final int SLEEP = 1000;  
     public static final boolean DROP_TABLES_AFTER_TESTS = true;  
+    private final int myPort;
 
     private final String myID;
     private final NodeConfig<String> nodeConfig;
@@ -39,33 +40,46 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     private Cluster cluster;
     private com.datastax.driver.core.Session session;
 
+    private static int resolvePort(NodeConfig<String> nodeConfig, String myID) {
+        int p = nodeConfig.getNodePort(myID);
+        // If config doesn't specify a valid port (e.g., -1), fall back to 0 (ephemeral)
+        if (p < 0 || p > 65535) {
+            return 0;
+        }
+        return p;
+    }
+
+
+
     public MyDBFaultTolerantServerZK(NodeConfig<String> nodeConfig, String myID,
-                                     InetSocketAddress isaDB) throws IOException {
+                                    InetSocketAddress isaDB) throws IOException {
+
+        // Use a sanitized port value here so InetSocketAddress never sees -1
         super(new InetSocketAddress(nodeConfig.getNodeAddress(myID),
-                                    nodeConfig.getNodePort(myID)),
-              isaDB,
-              myID); 
-    if (nodeConfig.getNodePort(myID) <= 0)
-        throw new IllegalStateException("Bad node port for " + myID);
+                                    resolvePort(nodeConfig, myID)),
+            isaDB,
+            myID);
 
         this.myID = myID;
         this.nodeConfig = nodeConfig;
+        this.myPort = resolvePort(nodeConfig, myID);
 
         try {
             connectToCassandra(isaDB);
             connectToZookeeper();
-            registerMyAddress();       
+            registerMyAddress();
             ensureZNodeExists(REQUESTS_PATH);
             recoverFromCheckpoint();
             replayPendingRequests();
         } catch (KeeperException | InterruptedException e) {
             e.printStackTrace();
-            throw new RuntimeException(e); 
+            throw new RuntimeException(e);
         }
     }
+
     private void registerMyAddress() throws KeeperException, InterruptedException {
         String path = "/servers/" + myID;
-        String address = nodeConfig.getNodeAddress(myID) + ":" + nodeConfig.getNodePort(myID);
+        String address = nodeConfig.getNodeAddress(myID) + ":" + myPort; // ✅ use myPort here
         byte[] data = address.getBytes(StandardCharsets.UTF_8);
 
         Stat stat = zk.exists(path, false);
@@ -77,6 +91,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
 
         log.info("Registered server at " + address + " in Zookeeper");
     }
+
 
     private void connectToCassandra(InetSocketAddress isaDB) {
         cluster = Cluster.builder()
