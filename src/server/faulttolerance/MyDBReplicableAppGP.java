@@ -1,7 +1,6 @@
 package server.faulttolerance;
 
-import com.datastax.driver.core.Cluster;
-import com.datastax.driver.core.Session;
+import com.datastax.driver.core.*;
 import edu.umass.cs.gigapaxos.interfaces.Replicable;
 import edu.umass.cs.gigapaxos.interfaces.Request;
 import edu.umass.cs.gigapaxos.paxospackets.RequestPacket;
@@ -9,25 +8,32 @@ import edu.umass.cs.nio.interfaces.IntegerPacketType;
 import edu.umass.cs.reconfiguration.reconfigurationutils.RequestParseException;
 import edu.umass.cs.utils.Util;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class MyDBReplicableAppGP implements Replicable {
 
-    private static final int SLEEP = 1000;
+    public static final int SLEEP = 100; // used by tests
 
     private final Cluster cluster;
     private final Session session;
     private final String keyspace;
 
+    private static final int MAX_LOG_SIZE = 400;
+
+    private final Queue<String> requestLog = new ConcurrentLinkedQueue<>();
+
+    private final File checkpointFile;
+
     public MyDBReplicableAppGP(String[] args) throws IOException {
-        if (args == null || args.length < 1) {
+        if (args == null || args.length < 1)
             throw new IllegalArgumentException("Must provide keyspace name as args[0]");
-        }
+
         this.keyspace = args[0];
+        this.checkpointFile = new File(keyspace + "_checkpoint.dat");
 
         InetSocketAddress isaDB = args.length > 1 ?
                 Util.getInetSocketAddressFromString(args[1]) :
@@ -41,9 +47,11 @@ public class MyDBReplicableAppGP implements Replicable {
 
         session.execute("CREATE KEYSPACE IF NOT EXISTS " + keyspace +
                 " WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};");
-
         session.execute("USE " + keyspace + ";");
+
+        restoreCheckpoint();
     }
+
 
     @Override
     public boolean execute(Request request) {
@@ -52,16 +60,24 @@ public class MyDBReplicableAppGP implements Replicable {
 
     @Override
     public boolean execute(Request request, boolean b) {
-        if (!(request instanceof RequestPacket)) {
+        if (!(request instanceof RequestPacket))
             throw new IllegalArgumentException("Expected RequestPacket");
-        }
 
         RequestPacket rp = (RequestPacket) request;
-
         String command = rp.toString();
 
         try {
             session.execute(command);
+
+            requestLog.add(command);
+
+            if (requestLog.size() >= MAX_LOG_SIZE) {
+                checkpointState();
+                requestLog.clear();
+            }
+
+            Thread.sleep(SLEEP);
+
             return true;
         } catch (Exception e) {
             e.printStackTrace();
@@ -72,17 +88,30 @@ public class MyDBReplicableAppGP implements Replicable {
 
     @Override
     public String checkpoint(String s) {
-        return "";
+        try {
+            checkpointState();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return checkpointFile.getAbsolutePath();
     }
 
+   
     @Override
-    public boolean restore(String s, String s1) {
-        return true;
+    public boolean restore(String filePath, String s1) {
+        try {
+            restoreCheckpoint();
+            return true;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
     }
 
+ 
     @Override
     public Request getRequest(String s) throws RequestParseException {
-        return null;
+        return new RequestPacket(s, false);
     }
 
     @Override
@@ -90,8 +119,41 @@ public class MyDBReplicableAppGP implements Replicable {
         return new HashSet<>();
     }
 
+   
     public void close() {
         if (session != null) session.close();
         if (cluster != null) cluster.close();
+    }
+
+    private void checkpointState() throws IOException {
+        try (ObjectOutputStream oos = new ObjectOutputStream(
+                new FileOutputStream(checkpointFile))) {
+
+            List<String> logCopy = new ArrayList<>(requestLog);
+            oos.writeObject(logCopy);
+        }
+    }
+
+
+    @SuppressWarnings("unchecked")
+    private void restoreCheckpoint() throws IOException {
+        if (!checkpointFile.exists()) return;
+
+        try (ObjectInputStream ois = new ObjectInputStream(
+                new FileInputStream(checkpointFile))) {
+            List<String> savedLog = (List<String>) ois.readObject();
+
+            for (String cmd : savedLog) {
+                try {
+                    session.execute(cmd);
+                    requestLog.add(cmd);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+        } catch (ClassNotFoundException e) {
+            throw new IOException(e);
+        }
     }
 }
