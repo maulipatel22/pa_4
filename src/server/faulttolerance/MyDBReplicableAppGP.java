@@ -1,8 +1,6 @@
 package server.faulttolerance;
 
 import com.datastax.driver.core.Cluster;
-import com.datastax.driver.core.ResultSet;
-import com.datastax.driver.core.Row;
 import com.datastax.driver.core.Session;
 import edu.umass.cs.gigapaxos.interfaces.Replicable;
 import edu.umass.cs.gigapaxos.interfaces.Request;
@@ -78,60 +76,17 @@ public class MyDBReplicableAppGP implements Replicable {
         }
 
         RequestPacket rp = (RequestPacket) request;
-        String reqString = rp.getRequestValue(); 
-
-        handleRequestString(reqString);
-
-        return true;
-    }
-
-  
-    private void handleRequestString(String req) {
-        if (req == null) return;
-
-        String trimmed = req.trim();
-        if (trimmed.isEmpty()) return;
-
-        String[] parts = trimmed.split("\\s+");
-        String op = parts[0].toUpperCase();
+        String reqString = rp.getRequestValue();
+        if (reqString == null) {
+            return false;
+        }
 
         try {
-            switch (op) {
-                case "PUT": {
-                    if (parts.length != 3) return;
-                    String key = parts[1];
-                    int value = Integer.parseInt(parts[2]);
-                    session.execute("INSERT INTO " + TABLE + " (k, v) VALUES (?, ?)",
-                            key, value);
-                    break;
-                }
-                case "GET": {
-                    if (parts.length != 2) return;
-                    String key = parts[1];
-                    ResultSet rs = session.execute(
-                            "SELECT v FROM " + TABLE + " WHERE k = ?", key);
-                    Row row = rs.one();
-                    int value = (row != null) ? row.getInt("v") : 0;
-                    break;
-                }
-                case "ADD": {
-                    if (parts.length != 3) return;
-                    String key = parts[1];
-                    int delta = Integer.parseInt(parts[2]);
-                    ResultSet rs = session.execute(
-                            "SELECT v FROM " + TABLE + " WHERE k = ?", key);
-                    Row row = rs.one();
-                    int oldVal = (row != null) ? row.getInt("v") : 0;
-                    int newVal = oldVal + delta;
-                    session.execute("INSERT INTO " + TABLE + " (k, v) VALUES (?, ?)",
-                            key, newVal);
-                    break;
-                }
-                default:
-                    break;
-            }
+            session.execute(reqString);
+            return true;
         } catch (Exception e) {
             e.printStackTrace();
+            return false;
         }
     }
 
@@ -147,7 +102,7 @@ public class MyDBReplicableAppGP implements Replicable {
 
     @Override
     public Request getRequest(String s) throws RequestParseException {
-        return null; 
+        return null;
     }
 
     @Override
