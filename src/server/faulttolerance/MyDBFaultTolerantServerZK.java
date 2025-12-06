@@ -44,42 +44,32 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     private final Cluster cluster;
     private final Session session;
 
-    // Last znode name this server has applied (e.g., "req_0000000032")
     private volatile String lastAppliedZnode = null;
 
     public MyDBFaultTolerantServerZK(NodeConfig<String> nodeConfig,
                                      String myID,
-                                     InetSocketAddress isaDB) throws IOException {
+                                     InetSocketAddress cassandraAddr) throws IOException {
         super(new InetSocketAddress(nodeConfig.getNodeAddress(myID),
-                nodeConfig.getNodePort(myID) - ReplicatedServer.SERVER_PORT_OFFSET),
-              isaDB,
-              myID);
-
+                nodeConfig.getNodePort(myID)), cassandraAddr);
         this.nodeConfig = nodeConfig;
         this.myID = myID;
-
         this.cluster = Cluster.builder()
-                .addContactPoint(isaDB.getHostString())
-                .withPort(isaDB.getPort())
+                .addContactPoint(cassandraAddr.getHostString())
+                .withPort(cassandraAddr.getPort())
                 .build();
-        this.session = cluster.connect(myID);
-        log.info("Connected to Cassandra keyspace " + myID + " at " + isaDB);
-
+        Session tmpSession = cluster.connect();
+        tmpSession.execute("CREATE KEYSPACE IF NOT EXISTS zkft WITH replication = {'class':'SimpleStrategy', 'replication_factor':1};");
+        this.session = cluster.connect("zkft");
         try {
             connectToZookeeper();
-
-            ensureZNodeExists(SERVERS_PATH);
             ensureZNodeExists(REQUESTS_PATH);
-
+            ensureZNodeExists(SERVERS_PATH);
             registerMyAddress();
-
             initCheckpointTable();
             loadCheckpoint();
-
             replayPendingRequests();
-        } catch (KeeperException | InterruptedException e) {
-            log.log(Level.SEVERE, "Error during startup / recovery", e);
-            throw new RuntimeException(e);
+        } catch (IOException | KeeperException | InterruptedException e) {
+            throw new IOException(e);
         }
     }
 
@@ -178,7 +168,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
-
     private synchronized void replayPendingRequests() {
         try {
             List<String> children = zk.getChildren(REQUESTS_PATH, this);
@@ -204,7 +193,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             log.log(Level.SEVERE, "Error updating checkpoint from ZK log", e);
         }
     }
-
 
     @Override
     protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
