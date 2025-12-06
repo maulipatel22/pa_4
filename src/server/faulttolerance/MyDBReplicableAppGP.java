@@ -6,10 +6,8 @@ import edu.umass.cs.gigapaxos.interfaces.Replicable;
 import edu.umass.cs.gigapaxos.interfaces.Request;
 import edu.umass.cs.gigapaxos.paxospackets.RequestPacket;
 import edu.umass.cs.nio.interfaces.IntegerPacketType;
-import edu.umass.cs.nio.interfaces.NodeConfig;
-import edu.umass.cs.nio.nioutils.NodeConfigUtils;
-import edu.umass.cs.utils.Util;
 import edu.umass.cs.reconfiguration.reconfigurationutils.RequestParseException;
+import edu.umass.cs.utils.Util;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -21,8 +19,8 @@ public class MyDBReplicableAppGP implements Replicable {
 
     private static final int SLEEP = 1000;
 
-    private Cluster cluster;
-    private Session session;
+    private final Cluster cluster;
+    private final Session session;
     private final String keyspace;
 
     public MyDBReplicableAppGP(String[] args) throws IOException {
@@ -59,7 +57,8 @@ public class MyDBReplicableAppGP implements Replicable {
         }
 
         RequestPacket rp = (RequestPacket) request;
-        String command = new String(rp.getRequestBytes(), StandardCharsets.UTF_8);
+
+        String command = new String(rp.getBytes(), StandardCharsets.UTF_8);
 
         try {
             session.execute(command);
