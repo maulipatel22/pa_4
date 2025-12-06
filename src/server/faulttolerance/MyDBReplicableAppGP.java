@@ -53,18 +53,16 @@ public class MyDBReplicableAppGP implements Replicable {
     public boolean execute(Request request) {
         return execute(request, false);
     }
-
     @Override
     public boolean execute(Request request, boolean b) {
         if (!(request instanceof RequestPacket))
             throw new IllegalArgumentException("Expected RequestPacket");
 
         RequestPacket rp = (RequestPacket) request;
-        String command = new String(rp.getRequest(), StandardCharsets.UTF_8);
+        String command = rp.toString();  // <-- fixed
 
         try {
             session.execute(command);
-
             requestLog.add(command);
 
             if (requestLog.size() >= MAX_LOG_SIZE) {
@@ -79,6 +77,12 @@ public class MyDBReplicableAppGP implements Replicable {
             return false;
         }
     }
+
+    @Override
+    public Request getRequest(String s) throws RequestParseException {
+        return new RequestPacket(s, false);  // <-- fixed
+    }
+
 
     @Override
     public String checkpoint(String s) {
@@ -101,10 +105,6 @@ public class MyDBReplicableAppGP implements Replicable {
         }
     }
 
-    @Override
-    public Request getRequest(String s) throws RequestParseException {
-        return new RequestPacket(s.getBytes(StandardCharsets.UTF_8), false);
-    }
 
     @Override
     public Set<IntegerPacketType> getRequestTypes() {
