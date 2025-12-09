@@ -81,7 +81,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             loadCheckpoint();
             if (isGradeTableEmpty()) {
                 log.warning("Grade table empty on startup — forcing full replay for " + myID);
-                this.lastAppliedZnode = null;   // ignore checkpoint
+                this.lastAppliedZnode = null;  
             }
 
             replayPendingRequests();
