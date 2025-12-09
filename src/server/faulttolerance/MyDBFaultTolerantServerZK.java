@@ -12,7 +12,6 @@ import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
 import server.MyDBSingleServer;
 import server.ReplicatedServer;
-
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -33,22 +32,19 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     public static final boolean DROP_TABLES_AFTER_TESTS = true;
     public static final int MAX_LOG_SIZE = 400;
     public static final int DEFAULT_PORT = 2181;
-
     private static final String REQUESTS_PATH = "/requests";
     private static final String SERVERS_PATH  = "/servers";
     private static final String CHECKPOINT_TABLE = "checkpoint";
     private static final String DATA_TABLE = "grade";
-
     private final NodeConfig<String> nodeConfig;
     private final String myID;
-
     private ZooKeeper zk;
     private final CountDownLatch zkConnectedLatch = new CountDownLatch(1);
-    private final AtomicBoolean zkInitialized = new AtomicBoolean(false);
-
     private final Cluster cluster;
     private final Session session;
     private volatile String lastAppliedZnode = null;
+    private final AtomicBoolean zkInitialized = new AtomicBoolean(false);
+
 
     public MyDBFaultTolerantServerZK(NodeConfig<String> nodeConfig,
                                      String myID,
@@ -65,7 +61,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
 
         this.nodeConfig = nodeConfig;
         this.myID = myID.toLowerCase();
-
         try {
             this.cluster = Cluster.builder()
                     .addContactPoint(cassandraAddress.getHostString())
@@ -78,48 +73,36 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             sys.close();
             this.session = cluster.connect(this.myID);
             connectToZookeeper();
-
-            if (!zkConnectedLatch.await(10, TimeUnit.SECONDS)) {
-                throw new IOException("Timed out waiting for ZooKeeper connection");
-            }
+            zkConnectedLatch.await(3, TimeUnit.SECONDS);
             initializeZookeeperStateIfNeeded();
             initDataTable();
             initCheckpointTable();
             loadCheckpoint();
-
             if (isGradeTableEmpty()) {
-                log.info("Grade table empty on startup for " + myID +
-                        " — replaying from beginning of log");
-                this.lastAppliedZnode = null;
+                log.warning("Grade table empty on startup — forcing full replay for " + myID);
+                this.lastAppliedZnode = null;  
             }
 
             replayPendingRequests();
-
         } catch (Exception e) {
-            log.log(Level.SEVERE,
-                    "Error while initializing MyDBFaultTolerantServerZK for " + myID, e);
-            if (e instanceof IOException) {
-                throw (IOException) e;
-            }
+            log.log(Level.SEVERE, "Error while initializing MyDBFaultTolerantServerZK for " + myID, e);
             throw new IOException(e);
         }
     }
-
     private boolean isGradeTableEmpty() {
         try {
             ResultSet rs = session.execute("SELECT * FROM " + DATA_TABLE + " LIMIT 1;");
             return rs.one() == null;
         } catch (Exception e) {
-            log.warning("Error checking if grade table is empty for " + myID +
-                    " : " + e.getMessage());
+            log.warning("Error: CHECK grade table is empty - " + myID);
             return true;
         }
     }
 
+
     private void connectToZookeeper() throws IOException {
         this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 15000, this);
     }
-
     @Override
     public void process(WatchedEvent event) {
         try {
@@ -136,38 +119,32 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
-    private void initializeZookeeperStateIfNeeded() throws KeeperException, InterruptedException {
-        if (!zkInitialized.compareAndSet(false, true)) {
-            return; 
-        }
 
+    private void initializeZookeeperStateIfNeeded() throws KeeperException, InterruptedException {
+        if (!zkInitialized.compareAndSet(false, true)) return;
         ensureZNodeExists(REQUESTS_PATH);
         ensureZNodeExists(SERVERS_PATH);
         registerMyAddress();
     }
 
     private void ensureZNodeExists(String path) throws KeeperException, InterruptedException {
-        Stat stat = zk.exists(path, false);
-        if (stat == null) {
+        if (zk.exists(path, false) == null) {
             try {
                 zk.create(path, new byte[0],
                         ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-            } catch (KeeperException.NodeExistsException ignore) {
-            }
+            } catch (KeeperException.NodeExistsException ignore) {}
         }
     }
 
     private void registerMyAddress() throws KeeperException, InterruptedException {
-        String serverPath = SERVERS_PATH + "/" + myID;
+        String p = SERVERS_PATH + "/" + myID;
         String addr = nodeConfig.getNodeAddress(myID) + ":" +
                 nodeConfig.getNodePort(myID);
         byte[] data = addr.getBytes(StandardCharsets.UTF_8);
-
-        if (zk.exists(serverPath, false) == null) {
-            zk.create(serverPath, data,
-                    ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+        if (zk.exists(p, false) == null) {
+            zk.create(p, data, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
         } else {
-            zk.setData(serverPath, data, -1);
+            zk.setData(p, data, -1);
         }
     }
 
@@ -200,23 +177,20 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     private void persistCheckpoint() {
         if (lastAppliedZnode != null) {
             session.execute("INSERT INTO " + CHECKPOINT_TABLE
-                    + " (server_id, last_znode) VALUES ('"
+                    + " (server_id,last_znode) VALUES ('"
                     + myID + "','" + lastAppliedZnode + "');");
         }
     }
 
     private synchronized void replayPendingRequests() {
         if (zk == null) return;
-
         try {
-
             List<String> children = zk.getChildren(REQUESTS_PATH, true);
             Collections.sort(children);
 
             for (String child : children) {
-                if (lastAppliedZnode != null && child.compareTo(lastAppliedZnode) <= 0) {
-                    continue; 
-                }
+                if (lastAppliedZnode != null && child.compareTo(lastAppliedZnode) <= 0)
+                    continue;
 
                 byte[] data = zk.getData(REQUESTS_PATH + "/" + child, false, null);
                 String req = new String(data, StandardCharsets.UTF_8);
@@ -226,13 +200,11 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
                 lastAppliedZnode = child;
                 persistCheckpoint();
             }
-        } catch (KeeperException.NoNodeException e) {
-            log.fine("No /requests znode yet for " + myID + " : " + e.getMessage());
+
         } catch (Exception e) {
             log.log(Level.SEVERE, "Replay failed on " + myID, e);
         }
     }
-
 
     @Override
     protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
@@ -240,7 +212,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         if (request.isEmpty()) return;
 
         boolean logged = false;
-
         try {
             if (zk != null) {
                 initializeZookeeperStateIfNeeded();
@@ -253,26 +224,17 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
                 );
                 logged = true;
             }
-        } catch (Exception e) {
-            log.log(Level.WARNING, "Failed to log request in ZooKeeper on " + myID, e);
-        }
-
-        if (!logged) {
-            session.execute(request);
-        } else {
-            replayPendingRequests();
-        }
-
+        } catch (Exception ignore) {}
+        if (!logged) session.execute(request);
+        replayPendingRequests();
         try {
             clientMessenger.send(header.sndr, "OK".getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            log.warning("Failed to reply to client on " + myID);
+            log.warning("Failed to reply to client");
         }
     }
 
-    @Override
     protected void handleMessageFromServer(byte[] bytes, NIOHeader header) {}
-
     @Override
     public void close() {
         try { if (zk != null) zk.close(); } catch (Exception ignore) {}
@@ -280,7 +242,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         try { cluster.close(); } catch (Exception ignore) {}
         super.close();
     }
-
     public static void main(String[] args) throws IOException {
         new MyDBFaultTolerantServerZK(
                 NodeConfigUtils.getNodeConfigFromFile(
