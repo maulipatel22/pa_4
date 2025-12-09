@@ -1,5 +1,3 @@
-// ========================= BEGIN FILE =============================
-
 package server.faulttolerance;
 
 import com.datastax.driver.core.Cluster;
@@ -14,7 +12,6 @@ import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
 import server.MyDBSingleServer;
 import server.ReplicatedServer;
-
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -26,9 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * ZooKeeper-based fault-tolerant server.
- */
+
 public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watcher {
 
     private static final Logger log =
@@ -38,24 +33,17 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     public static final boolean DROP_TABLES_AFTER_TESTS = true;
     public static final int MAX_LOG_SIZE = 400;
     public static final int DEFAULT_PORT = 2181;
-
     private static final String REQUESTS_PATH = "/requests";
     private static final String SERVERS_PATH  = "/servers";
     private static final String CHECKPOINT_TABLE = "checkpoint";
-
     private static final String DATA_TABLE = "grade";
-
     private final NodeConfig<String> nodeConfig;
     private final String myID;
-
     private ZooKeeper zk;
     private final CountDownLatch zkConnectedLatch = new CountDownLatch(1);
-
     private final Cluster cluster;
     private final Session session;
-
     private volatile String lastAppliedZnode = null;
-
     private final AtomicBoolean zkInitialized = new AtomicBoolean(false);
 
 
@@ -74,9 +62,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
 
         this.nodeConfig = nodeConfig;
         this.myID = myID.toLowerCase();
-
         try {
-            // Cassandra setup
             this.cluster = Cluster.builder()
                     .addContactPoint(cassandraAddress.getHostString())
                     .withPort(cassandraAddress.getPort())
@@ -86,38 +72,24 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             sys.execute("CREATE KEYSPACE IF NOT EXISTS " + this.myID
                     + " WITH replication = {'class':'SimpleStrategy','replication_factor':1};");
             sys.close();
-
             this.session = cluster.connect(this.myID);
-
             connectToZookeeper();
-
             zkConnectedLatch.await(3, TimeUnit.SECONDS);
-
             initializeZookeeperStateIfNeeded();
-
             initDataTable();
             initCheckpointTable();
-
-            // ----- Load checkpoint -----
             loadCheckpoint();
-
-            // ======== FIX FOR TEST39 ========
             if (isGradeTableEmpty()) {
                 log.warning("Grade table empty on startup — forcing full replay for " + myID);
                 this.lastAppliedZnode = null;   // ignore checkpoint
             }
-            // =================================
 
             replayPendingRequests();
-
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error initializing MyDBFaultTolerantServerZK for " + myID, e);
             throw new IOException(e);
         }
     }
-
-
-    // -------- FIX: helper method for test39 --------
     private boolean isGradeTableEmpty() {
         try {
             ResultSet rs = session.execute("SELECT * FROM " + DATA_TABLE + " LIMIT 1;");
@@ -127,13 +99,11 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
             return true;
         }
     }
-    // ------------------------------------------------
 
 
     private void connectToZookeeper() throws IOException {
         this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 15000, this);
     }
-
     @Override
     public void process(WatchedEvent event) {
         try {
@@ -172,9 +142,7 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         String p = SERVERS_PATH + "/" + myID;
         String addr = nodeConfig.getNodeAddress(myID) + ":" +
                 nodeConfig.getNodePort(myID);
-
         byte[] data = addr.getBytes(StandardCharsets.UTF_8);
-
         if (zk.exists(p, false) == null) {
             zk.create(p, data, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
         } else {
@@ -216,11 +184,8 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
-
-    // Replay log entries not yet applied
     private synchronized void replayPendingRequests() {
         if (zk == null) return;
-
         try {
             List<String> children = zk.getChildren(REQUESTS_PATH, true);
             Collections.sort(children);
@@ -243,7 +208,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         }
     }
 
-
     @Override
     protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
         String request = new String(bytes, StandardCharsets.UTF_8).trim();
@@ -263,11 +227,8 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
                 logged = true;
             }
         } catch (Exception ignore) {}
-
         if (!logged) session.execute(request);
-
         replayPendingRequests();
-
         try {
             clientMessenger.send(header.sndr, "OK".getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
@@ -276,7 +237,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
     }
 
     protected void handleMessageFromServer(byte[] bytes, NIOHeader header) {}
-
     @Override
     public void close() {
         try { if (zk != null) zk.close(); } catch (Exception ignore) {}
@@ -284,7 +244,6 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         try { cluster.close(); } catch (Exception ignore) {}
         super.close();
     }
-
     public static void main(String[] args) throws IOException {
         new MyDBFaultTolerantServerZK(
                 NodeConfigUtils.getNodeConfigFromFile(
@@ -297,5 +256,3 @@ public class MyDBFaultTolerantServerZK extends MyDBSingleServer implements Watch
         );
     }
 }
-
-// ========================= END FILE =============================
